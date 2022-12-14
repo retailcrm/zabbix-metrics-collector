@@ -9,21 +9,23 @@ import (
 )
 
 type zabbixTransport struct {
-	sender      *zabbix.Sender
 	logger      ErrorLogger
+	sender      *zabbix.Sender
+	done        chan bool
 	metricsHost string
-	collector   Collector
+	collectors  []Collector
 	interval    uint64
 	run         sync.Once
-	done        chan bool
+	runMutex    sync.Mutex
 }
 
 // NewZabbix creates new metrics transport for zabbix server.
-func NewZabbix(collector Collector, sender *zabbix.Sender, metricsHost string, interval uint64, logger ErrorLogger) Transport {
+func NewZabbix(
+	collectors []Collector, sender *zabbix.Sender, metricsHost string, interval uint64, logger ErrorLogger) Transport {
 	t := &zabbixTransport{
 		sender:      sender,
 		metricsHost: metricsHost,
-		collector:   collector,
+		collectors:  collectors,
 		interval:    interval,
 		logger:      logger,
 	}
@@ -31,7 +33,17 @@ func NewZabbix(collector Collector, sender *zabbix.Sender, metricsHost string, i
 	return t
 }
 
-// Run zabbix transport
+// WithCollector adds collector to the list of collectors that will be used for metrics collection.
+func (t *zabbixTransport) WithCollector(col Collector) Transport {
+	if t.collectors == nil {
+		t.collectors = []Collector{col}
+		return t
+	}
+	t.collectors = append(t.collectors, col)
+	return t
+}
+
+// Run zabbix transport.
 func (t *zabbixTransport) Run() {
 	t.run.Do(func() {
 		t.done = make(chan bool, 1)
@@ -39,6 +51,11 @@ func (t *zabbixTransport) Run() {
 			for {
 				select {
 				case <-t.done:
+					t.runMutex.Lock()
+					defer t.runMutex.Unlock()
+					close(t.done)
+					t.done = nil
+					t.run = sync.Once{}
 					return
 				case <-time.After(time.Duration(t.interval) * time.Second):
 					if err := t.Send(); err != nil {
@@ -50,25 +67,42 @@ func (t *zabbixTransport) Run() {
 	})
 }
 
-// Send metrics to zabbix
+// Send metrics to zabbix.
 func (t *zabbixTransport) Send() error {
-	metrics := t.collector.Metrics()
+	var total int
+	metrics := make([][]Metric, len(t.collectors))
 
-	data := make([]*zabbix.Metric, len(metrics))
-	for i, m := range metrics {
-		data[i] = zabbix.NewMetric(t.metricsHost, m.Name, m.Value)
+	for i, col := range t.collectors {
+		rec := col.Metrics()
+		total += len(rec)
+		metrics[i] = rec
 	}
-	_, err := t.sender.Send(zabbix.NewPacket(data))
 
+	i := 0
+	flattened := make([]*zabbix.Metric, total)
+	namesMap := make(map[string]struct{}, total)
+	for _, metricList := range metrics {
+		for _, item := range metricList {
+			if _, ok := namesMap[item.Name]; ok {
+				continue
+			}
+			flattened[i] = zabbix.NewMetric(t.metricsHost, item.Name, item.Value)
+			namesMap[item.Name] = struct{}{}
+			i++
+		}
+	}
+
+	_, err := t.sender.Send(zabbix.NewPacket(flattened))
 	return err
 }
 
-// Stop zabbix transport
+// Stop zabbix transport.
 func (t *zabbixTransport) Stop() error {
+	t.runMutex.Lock()
+	defer t.runMutex.Unlock()
 	if t.done == nil {
 		return ErrTransportInactive
 	}
 	t.done <- true
-	close(t.done)
 	return nil
 }

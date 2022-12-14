@@ -9,12 +9,11 @@ import (
 
 // MemoryCollector collects information about memory usage and goroutines count.
 type MemoryCollector struct {
-	memMutex sync.Mutex
+	done     chan bool
 	memStat  runtime.MemStats
-
 	interval uint64
 	run      sync.Once
-	done     chan bool
+	memMutex sync.Mutex
 }
 
 // NewMemoryCollector creates new instance of AppCollector.
@@ -47,7 +46,7 @@ func (c *MemoryCollector) Metrics() []Metric {
 	}
 }
 
-// Run collection process
+// Run collection process.
 func (c *MemoryCollector) Run() {
 	c.run.Do(func() {
 		c.done = make(chan bool, 1)
@@ -66,13 +65,12 @@ func (c *MemoryCollector) Run() {
 					c.memMutex.Unlock()
 					time.Sleep(time.Duration(c.interval) * time.Second)
 				}
-
 			}
 		}()
 	})
 }
 
-// Stop collection process
+// Stop collection process.
 func (c *MemoryCollector) Stop() error {
 	if c.done == nil {
 		return ErrCollectorInactive

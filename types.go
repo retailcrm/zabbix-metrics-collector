@@ -1,12 +1,12 @@
 package metrics
 
-// Metric contains name and value
+// Metric contains name and value.
 type Metric struct {
 	Name  string
 	Value string
 }
 
-// Collector return list of collected metrics
+// Collector return list of collected metrics.
 type Collector interface {
 	Metrics() []Metric
 }
@@ -25,6 +25,7 @@ type Stoppable interface {
 type Transport interface {
 	Runnable
 	Stoppable
+	WithCollector(Collector) Transport
 }
 
 // ErrorLogger can be used to output errors.
