@@ -16,7 +16,7 @@ type zabbixTransport struct {
 	collectors  []Collector
 	interval    uint64
 	run         sync.Once
-	runMutex    sync.Mutex
+	runnerMutex sync.Mutex
 }
 
 // NewZabbix creates new metrics transport for zabbix server.
@@ -48,11 +48,19 @@ func (t *zabbixTransport) Run() {
 	t.run.Do(func() {
 		t.done = make(chan bool, 1)
 		go func() {
+			t.runnerMutex.Lock()
+			for _, col := range t.collectors {
+				if runnable, ok := col.(Runnable); ok {
+					runnable.Run()
+				}
+			}
+			t.runnerMutex.Unlock()
+
 			for {
 				select {
 				case <-t.done:
-					t.runMutex.Lock()
-					defer t.runMutex.Unlock()
+					t.runnerMutex.Lock()
+					defer t.runnerMutex.Unlock()
 					close(t.done)
 					t.done = nil
 					t.run = sync.Once{}
@@ -69,6 +77,10 @@ func (t *zabbixTransport) Run() {
 
 // Send metrics to zabbix.
 func (t *zabbixTransport) Send() error {
+	if t.sender == nil {
+		return ErrNilSender
+	}
+
 	var total int
 	metrics := make([][]Metric, len(t.collectors))
 
@@ -98,11 +110,19 @@ func (t *zabbixTransport) Send() error {
 
 // Stop zabbix transport.
 func (t *zabbixTransport) Stop() error {
-	t.runMutex.Lock()
-	defer t.runMutex.Unlock()
+	t.runnerMutex.Lock()
+	defer t.runnerMutex.Unlock()
 	if t.done == nil {
 		return ErrTransportInactive
 	}
 	t.done <- true
+	for _, col := range t.collectors {
+		if stoppable, ok := col.(Stoppable); ok {
+			err := stoppable.Stop()
+			if err != nil {
+				t.logger.Errorf("cannot stop collector: %s", err)
+			}
+		}
+	}
 	return nil
 }
